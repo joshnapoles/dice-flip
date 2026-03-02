@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import styles from './CoinDice.module.css'
 
-// ─── Pip SVG face ─────────────────────────────────────────────────────────────
+// ─── Pip helpers (pure DOM — no React re-renders during animation) ────────────
 
 const PIP_POSITIONS: Record<number, [number, number][]> = {
   1: [[50, 50]],
@@ -12,28 +12,32 @@ const PIP_POSITIONS: Record<number, [number, number][]> = {
   6: [[34, 28], [66, 28], [34, 50], [66, 50], [34, 72], [66, 72]],
 }
 
-function PipFace({ value }: { value: number }) {
+function makePipSVG(value: number): string {
   const pips = PIP_POSITIONS[value] ?? []
-  return (
-    <svg viewBox="0 0 100 100" className={styles.pipSvg}>
-      {pips.map(([cx, cy], i) => (
-        <rect key={i} x={cx - 7} y={cy - 7} width={14} height={14} fill="#1a1a1a" />
-      ))}
-    </svg>
-  )
+  const rects = pips
+    .map(([cx, cy]) => `<rect x="${cx - 7}" y="${cy - 7}" width="14" height="14" fill="#1a1a1a"/>`)
+    .join('')
+  return `<svg viewBox="0 0 100 100" class="${styles.pipSvg}">${rects}</svg>`
+}
+
+const IDLE_HTML = `<span class="${styles.idleLabel}">D6</span>`
+
+function setFaceEl(el: HTMLDivElement | null, value: number | 'idle') {
+  if (el) el.innerHTML = value === 'idle' ? IDLE_HTML : makePipSVG(value)
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
 type Phase = 'idle' | 'spinning' | 'settling' | 'snapping' | 'landed'
 
-const MAX_VEL     = 14
-const ACCEL       = 0.18
-const DECEL_MIN   = 0.982
-const DECEL_MAX   = 0.990
-const COAST_MIN   = 360
-const COAST_MAX   = 900
-const MAX_HOLD_MS = 2000
+const MAX_VEL      = 14
+const ACCEL        = 0.18
+const DECEL_MIN    = 0.982
+const DECEL_MAX    = 0.990
+const COAST_MIN    = 360
+const COAST_MAX    = 900
+const MAX_HOLD_MS  = 2000
+const TARGET_MS    = 1000 / 60  // reference frame time (60 fps)
 
 function randomFace(exclude?: number): number {
   let n: number
@@ -50,12 +54,14 @@ export interface CoinDiceProps {
 }
 
 export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
-  const [phase, setPhase]       = useState<Phase>('idle')
-  const [result, setResult]     = useState<number | null>(null)
-  const [frontFace, setFrontFace] = useState(1)
-  const [backFace,  setBackFace]  = useState(4)
+  // Only phase + result drive React renders — faces & transform are pure DOM
+  const [phase, setPhase]   = useState<Phase>('idle')
+  const [result, setResult] = useState<number | null>(null)
 
-  const coinRef         = useRef<HTMLDivElement>(null)
+  const coinRef        = useRef<HTMLDivElement>(null)
+  const frontFaceElRef = useRef<HTMLDivElement>(null)
+  const backFaceElRef  = useRef<HTMLDivElement>(null)
+
   const phaseRef        = useRef<Phase>('idle')
   const angleRef        = useRef(0)
   const velRef          = useRef(0)
@@ -68,6 +74,7 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
   const decelRef        = useRef(DECEL_MIN)
   const snapTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
   const snapAngleRef    = useRef(0)
+  const lastTickTimeRef = useRef<number>(0)
 
   const setCoinTransform = (deg: number, transition?: string) => {
     const el = coinRef.current
@@ -78,32 +85,36 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
 
   const setPhaseSync = (p: Phase) => { phaseRef.current = p; setPhase(p) }
 
-  const tick = useCallback(() => {
+  // tick receives the RAF high-res timestamp for delta-time–normalised physics
+  const tick = useCallback((now: number) => {
+    // Normalise elapsed time to 60 fps so physics is framerate-independent.
+    // Clamp to 3× target to avoid huge jumps after tab switches.
+    const raw = lastTickTimeRef.current ? now - lastTickTimeRef.current : TARGET_MS
+    const dt  = Math.min(raw, TARGET_MS * 3) / TARGET_MS
+    lastTickTimeRef.current = now
+
     const ph = phaseRef.current
 
     if (ph === 'spinning') {
-      velRef.current = Math.min(velRef.current + ACCEL, MAX_VEL)
+      velRef.current = Math.min(velRef.current + ACCEL * dt, MAX_VEL)
 
     } else if (ph === 'settling') {
-      velRef.current *= decelRef.current
+      velRef.current *= Math.pow(decelRef.current, dt)
 
       const pastTarget      = angleRef.current >= casinoTargetRef.current
       const nearlyStop      = velRef.current < 0.25
       const essentiallyStop = velRef.current < 0.05
       if ((pastTarget && nearlyStop) || essentiallyStop) {
-        velRef.current   = 0
-        // Determine which face is currently showing
-        const curHalf         = lastHalfRotRef.current
-        const isBackShowing   = curHalf % 2 === 1
+        velRef.current = 0
+        // Determine which face is currently forward
+        const isBackShowing   = lastHalfRotRef.current % 2 === 1
         const resultFaceValue = isBackShowing ? backFaceRef.current : frontFaceRef.current
-        // Always land with front face carrying the result
         frontFaceRef.current  = resultFaceValue
-        setFrontFace(resultFaceValue)
-        // Snap to nearest 0° (front-face-forward) multiple of 360
-        snapAngleRef.current  = Math.round(angleRef.current / 360) * 360
+        setFaceEl(frontFaceElRef.current, resultFaceValue)
+        // Snap to nearest 0° (front-face-forward)
+        snapAngleRef.current = Math.round(angleRef.current / 360) * 360
         phaseRef.current = 'snapping'
         setPhase('snapping')
-        // Drive the snap transition directly on the DOM — no React state update needed
         setCoinTransform(snapAngleRef.current, 'transform 220ms ease-out')
         snapTimerRef.current = setTimeout(() => {
           angleRef.current  = snapAngleRef.current
@@ -118,28 +129,27 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
       }
     }
 
-    angleRef.current += velRef.current
+    angleRef.current += velRef.current * dt
 
+    // Randomise hidden face at each half-rotation — pure DOM, no React re-render
     if (ph === 'spinning' || ph === 'settling') {
       const halfRot = Math.floor((angleRef.current + 90) / 180)
       if (halfRot !== lastHalfRotRef.current) {
         lastHalfRotRef.current = halfRot
-        const isBackNowShowing = halfRot % 2 === 1
-        if (isBackNowShowing) {
-          // Back just came into view — randomise hidden front face
+        if (halfRot % 2 === 1) {
+          // Back now visible — randomise hidden front
           const next = randomFace(backFaceRef.current)
           frontFaceRef.current = next
-          setFrontFace(next)
+          setFaceEl(frontFaceElRef.current, next)
         } else {
-          // Front just came into view — randomise hidden back face
+          // Front now visible — randomise hidden back
           const next = randomFace(frontFaceRef.current)
           backFaceRef.current = next
-          setBackFace(next)
+          setFaceEl(backFaceElRef.current, next)
         }
       }
     }
 
-    // Write transform directly to DOM — bypasses React reconciler each frame
     setCoinTransform(angleRef.current)
     rafRef.current = requestAnimationFrame(tick)
   }, [onResult])
@@ -147,23 +157,22 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
   // ── React to external pressing signal ─────────────────────────────────────
   useEffect(() => {
     if (pressing) {
-      // Start / restart spin
       const ph = phaseRef.current
       if (ph === 'snapping') return
       cancelAnimationFrame(rafRef.current)
       if (snapTimerRef.current) { clearTimeout(snapTimerRef.current); snapTimerRef.current = null }
-      lastHalfRotRef.current = Math.floor((angleRef.current + 90) / 180)
+      lastHalfRotRef.current  = Math.floor((angleRef.current + 90) / 180)
+      lastTickTimeRef.current = 0  // reset dt on new press
       setResult(null)
       resultRef.current = null
-      // Re-sync back face so both faces differ from each other
       const newBack = randomFace(frontFaceRef.current)
       backFaceRef.current = newBack
-      setBackFace(newBack)
+      setFaceEl(frontFaceElRef.current, frontFaceRef.current)
+      setFaceEl(backFaceElRef.current,  newBack)
       velRef.current = ph === 'landed' ? 3 : velRef.current || 3
       setPhaseSync('spinning')
       rafRef.current = requestAnimationFrame(tick)
     } else {
-      // Release — settle with coast scaled to hold duration
       if (phaseRef.current !== 'spinning') return
       const holdMs = Date.now() - pressStart
       const t      = Math.min(holdMs / MAX_HOLD_MS, 1)
@@ -171,7 +180,8 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
       const baseCoast     = COAST_MIN + t * (COAST_MAX - COAST_MIN)
       const extraRotation = baseCoast * (0.85 + Math.random() * 0.3)
       casinoTargetRef.current = angleRef.current + extraRotation
-      const minVel = extraRotation * (1 - decelRef.current)
+      // Ensure enough velocity to actually coast to target
+      const minVel = (extraRotation / TARGET_MS) * (1 - decelRef.current)
       velRef.current = Math.min(Math.max(velRef.current, minVel), MAX_VEL)
       setPhaseSync('settling')
     }
@@ -183,6 +193,11 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
     if (snapTimerRef.current) clearTimeout(snapTimerRef.current)
   }, [])
 
+  // Sync face DOM when going back to idle (after mount / diceCount reset)
+  useEffect(() => {
+    if (phase === 'idle') setFaceEl(frontFaceElRef.current, 'idle')
+  }, [phase])
+
   return (
     <div className={styles.root}>
       <div className={styles.scene}>
@@ -193,7 +208,7 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
             onTransitionEnd={() => {
               if (phaseRef.current !== 'snapping') return
               if (snapTimerRef.current) { clearTimeout(snapTimerRef.current); snapTimerRef.current = null }
-              const snap        = snapAngleRef.current
+              const snap = snapAngleRef.current
               angleRef.current  = snap
               phaseRef.current  = 'landed'
               setPhase('landed')
@@ -204,19 +219,9 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
               setCoinTransform(snap)
             }}
           >
-            {/* Front face */}
-            <div className={`${styles.face} ${styles.faceFront}`}>
-              {phase === 'idle' ? (
-                <span className={styles.idleLabel}>D6</span>
-              ) : (
-                <PipFace value={frontFace} />
-              )}
-            </div>
-
-            {/* Back face */}
-            <div className={`${styles.face} ${styles.faceBack}`}>
-              <PipFace value={backFace} />
-            </div>
+            {/* Faces: content is written via setFaceEl (direct DOM), not React state */}
+            <div ref={frontFaceElRef} className={`${styles.face} ${styles.faceFront}`} />
+            <div ref={backFaceElRef}  className={`${styles.face} ${styles.faceBack}`} />
 
             {/* Thickness edges */}
             <div className={`${styles.edge} ${styles.edgeTop}`} />
