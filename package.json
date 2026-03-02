@@ -3,11 +3,17 @@
   "version": "0.2.0",
   "type": "module",
   "description": "Tactile dice-flip component library for React — configurable DicePanel with CSS Modules",
-  "keywords": ["dice", "react", "component", "game", "library"],
+  "keywords": [
+    "dice",
+    "react",
+    "component",
+    "game",
+    "library"
+  ],
   "homepage": "https://github.com/joshnapoles/dice-flip",
   "repository": {
     "type": "git",
-    "url": "https://github.com/joshnapoles/dice-flip.git"
+    "url": "git+https://github.com/joshnapoles/dice-flip.git"
   },
   "license": "MIT",
   "main": "dist/index.cjs",
@@ -20,7 +26,9 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "vite build",
