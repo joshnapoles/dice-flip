@@ -13,10 +13,17 @@ Designed to be embedded in other games as a library.
 
 ## Using `DicePanel` in your project
 
-Import the component from the library entry point:
+Install the package:
+
+```bash
+npm install dice-flip
+```
+
+Import the component and its styles:
 
 ```tsx
 import { DicePanel } from 'dice-flip'
+import 'dice-flip/dist/index.css'
 ```
 
 ### Props
