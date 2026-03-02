@@ -52,10 +52,10 @@ export interface CoinDiceProps {
 export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
   const [phase, setPhase]       = useState<Phase>('idle')
   const [result, setResult]     = useState<number | null>(null)
-  const [angle, setAngle]       = useState(0)
   const [frontFace, setFrontFace] = useState(1)
   const [backFace,  setBackFace]  = useState(4)
 
+  const coinRef         = useRef<HTMLDivElement>(null)
   const phaseRef        = useRef<Phase>('idle')
   const angleRef        = useRef(0)
   const velRef          = useRef(0)
@@ -68,6 +68,13 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
   const decelRef        = useRef(DECEL_MIN)
   const snapTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
   const snapAngleRef    = useRef(0)
+
+  const setCoinTransform = (deg: number, transition?: string) => {
+    const el = coinRef.current
+    if (!el) return
+    el.style.transition = transition ?? ''
+    el.style.transform  = `rotateY(${deg}deg)`
+  }
 
   const setPhaseSync = (p: Phase) => { phaseRef.current = p; setPhase(p) }
 
@@ -96,6 +103,8 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
         snapAngleRef.current  = Math.round(angleRef.current / 360) * 360
         phaseRef.current = 'snapping'
         setPhase('snapping')
+        // Drive the snap transition directly on the DOM — no React state update needed
+        setCoinTransform(snapAngleRef.current, 'transform 220ms ease-out')
         snapTimerRef.current = setTimeout(() => {
           angleRef.current  = snapAngleRef.current
           phaseRef.current  = 'landed'
@@ -103,7 +112,7 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
           resultRef.current = resultFaceValue
           setResult(resultFaceValue)
           onResult?.(resultFaceValue)
-          setAngle(snapAngleRef.current)
+          setCoinTransform(snapAngleRef.current)
         }, 350)
         return
       }
@@ -130,7 +139,8 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
       }
     }
 
-    setAngle(angleRef.current)
+    // Write transform directly to DOM — bypasses React reconciler each frame
+    setCoinTransform(angleRef.current)
     rafRef.current = requestAnimationFrame(tick)
   }, [onResult])
 
@@ -173,19 +183,13 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
     if (snapTimerRef.current) clearTimeout(snapTimerRef.current)
   }, [])
 
-  // ── Derive display angle ──────────────────────────────────────────────────
-  const displayAngle = phase === 'snapping' ? snapAngleRef.current : angle
-
   return (
     <div className={styles.root}>
       <div className={styles.scene}>
         <div className={styles.coinWrap}>
           <div
+            ref={coinRef}
             className={styles.coin}
-            style={{
-              transform: `rotateY(${displayAngle}deg)`,
-              transition: phase === 'snapping' ? 'transform 220ms ease-out' : undefined,
-            }}
             onTransitionEnd={() => {
               if (phaseRef.current !== 'snapping') return
               if (snapTimerRef.current) { clearTimeout(snapTimerRef.current); snapTimerRef.current = null }
@@ -197,7 +201,7 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
               resultRef.current = rv
               setResult(rv)
               onResult?.(rv)
-              setAngle(snap)
+              setCoinTransform(snap)
             }}
           >
             {/* Front face */}
