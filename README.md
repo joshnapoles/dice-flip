@@ -32,6 +32,8 @@ import 'dice-flip/dist/index.css'
 |---|---|---|---|
 | `diceCount` | `number` | `1` | Number of dice to start with. |
 | `showAddButton` | `boolean` | `true` | Show or hide the **+** button that lets the player add more dice at runtime. |
+| `transparent` | `boolean` | `false` | When `true`, removes the panel background, border and box-shadow — ideal for placing the component directly over a custom game UI. |
+| `onDieLanded` | `(index: number, value: number) => void` | — | Called each time an individual die lands. `index` is the die's 0-based position in the panel; `value` is its result (1–6). |
 | `onAllLanded` | `(results: number[], total: number) => void` | — | Called once every die in a roll has landed. `results` contains each die's value in order; `total` is their sum. |
 
 ### Examples
@@ -41,15 +43,30 @@ import 'dice-flip/dist/index.css'
 <DicePanel diceCount={1} showAddButton={false} />
 ```
 
-**Two dice, fixed count, with result callback**
+**Two dice, fixed count, with result callbacks**
 ```tsx
 <DicePanel
   diceCount={2}
   showAddButton={false}
+  onDieLanded={(index, value) => {
+    console.log(`Die ${index} landed on ${value}`)
+  }}
   onAllLanded={(results, total) => {
     console.log('Rolled:', results, '— Total:', total)
   }}
 />
+```
+
+**Transparent panel over a custom background**
+```tsx
+<div style={{ background: 'url(/my-table.png)' }}>
+  <DicePanel
+    transparent
+    diceCount={3}
+    onDieLanded={(index, value) => console.log(index, value)}
+    onAllLanded={(results, total) => applyRollToGame(results, total)}
+  />
+</div>
 ```
 
 **Variable dice, add button enabled (default behaviour)**

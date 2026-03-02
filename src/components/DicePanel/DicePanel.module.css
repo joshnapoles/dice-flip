@@ -26,6 +26,12 @@
   cursor: default;
 }
 
+.panelTransparent {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
 /* ── Dice row inside panel ──────────────────────────────────────────────────── */
 .diceArea {
   display: flex;

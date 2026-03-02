@@ -14,11 +14,22 @@ export interface DicePanelProps {
    */
   showAddButton?: boolean
   /**
+   * Called each time an individual die lands.
+   * `index` is the 0-based position of the die in the panel (order added);
+   * `value` is the result (1–6).
+   */
+  onDieLanded?: (index: number, value: number) => void
+  /**
    * Called once all dice in a roll have landed.
    * `results` is one value per die (in the order they were added),
    * `total` is their sum.
    */
   onAllLanded?: (results: number[], total: number) => void
+  /**
+   * When true the panel background, border and box-shadow are removed so the
+   * component can be placed directly over a custom game UI.
+   */
+  transparent?: boolean
 }
 
 let nextId = 1
@@ -32,7 +43,9 @@ function makeIds(count: number): number[] {
 export function DicePanel({
   diceCount = 1,
   showAddButton = true,
+  onDieLanded,
   onAllLanded,
+  transparent = false,
 }: DicePanelProps) {
   const [dice, setDice]         = useState<number[]>(() => makeIds(diceCount))
   const [results, setResults]   = useState<Record<number, number | null>>({})
@@ -77,7 +90,11 @@ export function DicePanel({
 
   const handleResult = useCallback((id: number, value: number) => {
     setResults(prev => ({ ...prev, [id]: value }))
-  }, [])
+    if (onDieLanded) {
+      const index = diceRef.current.indexOf(id)
+      if (index !== -1) onDieLanded(index, value)
+    }
+  }, [onDieLanded])
 
   const landedCount = dice.filter(id => results[id] != null).length
   const allLanded   = dice.length > 0 && landedCount === dice.length
@@ -102,7 +119,11 @@ export function DicePanel({
 
   return (
     <div
-      className={`${styles.panel} ${settling ? styles.panelLocked : ''}`}
+      className={[
+        styles.panel,
+        settling ? styles.panelLocked : '',
+        transparent ? styles.panelTransparent : '',
+      ].filter(Boolean).join(' ')}
       onMouseDown={handlePressStart}
       onMouseUp={handlePressEnd}
       onMouseLeave={handlePressEnd}
