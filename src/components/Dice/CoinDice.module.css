@@ -4,6 +4,8 @@
   align-items: center;
   justify-content: center;
   gap: 16px;
+  --dice-size: clamp(120px, 20vw, 200px);
+  --dice-thickness: calc(var(--dice-size) * 0.1);
 }
 
 .scene {
@@ -21,8 +23,8 @@
 }
 
 .coin {
-  width: 200px;
-  height: 200px;
+  width: var(--dice-size);
+  height: var(--dice-size);
   border-radius: 0;
   transform-origin: center;
   transform-style: preserve-3d;
@@ -49,11 +51,11 @@
 }
 
 .faceFront {
-  transform: translateZ(10px);
+  transform: translateZ(calc(var(--dice-thickness) / 2));
 }
 
 .faceBack {
-  transform: rotateY(180deg) translateZ(10px);
+  transform: rotateY(180deg) translateZ(calc(var(--dice-thickness) / 2));
 }
 
 /* ── Thickness edge strips ────────────────────────────────────────────────── */
@@ -66,9 +68,9 @@
 }
 
 .edgeTop {
-  width: 200px;
-  height: 20px;
-  top: -10px;
+  width: var(--dice-size);
+  height: var(--dice-thickness);
+  top: calc(var(--dice-thickness) / -2);
   left: 0;
   border-radius: 0;
   transform: rotateX(90deg);
@@ -76,9 +78,9 @@
 }
 
 .edgeBottom {
-  width: 200px;
-  height: 20px;
-  bottom: -10px;
+  width: var(--dice-size);
+  height: var(--dice-thickness);
+  bottom: calc(var(--dice-thickness) / -2);
   left: 0;
   border-radius: 0;
   transform: rotateX(-90deg);
@@ -86,20 +88,20 @@
 }
 
 .edgeLeft {
-  width: 20px;
-  height: 200px;
+  width: var(--dice-thickness);
+  height: var(--dice-size);
   top: 0;
-  left: -10px;
+  left: calc(var(--dice-thickness) / -2);
   border-radius: 0;
   transform: rotateY(-90deg);
   background: #a8a8a8;
 }
 
 .edgeRight {
-  width: 20px;
-  height: 200px;
+  width: var(--dice-thickness);
+  height: var(--dice-size);
   top: 0;
-  right: -10px;
+  right: calc(var(--dice-thickness) / -2);
   border-radius: 0;
   transform: rotateY(90deg);
   background: #c8c8c8;

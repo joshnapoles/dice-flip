@@ -32,11 +32,18 @@
   box-shadow: none;
 }
 
+.panelDisabled {
+  cursor: default !important;
+  opacity: 0.9;
+  pointer-events: none;
+}
+
 /* ── Dice row inside panel ──────────────────────────────────────────────────── */
 .diceArea {
   display: flex;
-  flex-wrap: wrap;
-  gap: 24px;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: min(24px, 2vw);
   align-items: flex-start;
   justify-content: center;
 }

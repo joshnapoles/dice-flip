@@ -30,6 +30,37 @@ export interface DicePanelProps {
    * component can be placed directly over a custom game UI.
    */
   transparent?: boolean
+  /**
+   * Array of predetermined outcomes for each die (1-6). 
+   * Used for multiplayer sync - spectators receive the roller's results.
+   */
+  targetValues?: number[]
+  /**
+   * When true, the panel becomes view-only (no user interaction).
+   * Use for spectator mode in multiplayer.
+   */
+  disabled?: boolean
+  /**
+   * External press control - when provided, overrides internal press handling.
+   */
+  externalPressing?: boolean
+  /**
+   * External press start time control.
+   */
+  externalPressStart?: number
+  /**
+   * Hold duration in milliseconds for cross-device sync.
+   * Send from roller to spectators to ensure identical timing.
+   */
+  holdDuration?: number
+  /**
+   * Called when user starts pressing (for controlling other panels).
+   */
+  onPressStart?: (timestamp: number) => void
+  /**
+   * Called when user stops pressing (for controlling other panels).
+   */
+  onPressEnd?: (holdDuration: number) => void
 }
 
 let nextId = 1
@@ -46,6 +77,13 @@ export function DicePanel({
   onDieLanded,
   onAllLanded,
   transparent = false,
+  targetValues,
+  disabled = false,
+  externalPressing,
+  externalPressStart,
+  holdDuration,
+  onPressStart,
+  onPressEnd,
 }: DicePanelProps) {
   const [dice, setDice]         = useState<number[]>(() => makeIds(diceCount))
   const [results, setResults]   = useState<Record<number, number | null>>({})
@@ -56,6 +94,10 @@ export function DicePanel({
   const diceRef       = useRef<number[]>([])
   const rollDiceRef   = useRef<number[]>([])
   diceRef.current     = dice
+
+  // Use external press state if provided (for synchronized spectator mode)
+  const effectivePressing = externalPressing ?? pressing
+  const effectivePressStart = externalPressStart ?? pressStartRef.current
 
   // Re-initialise when diceCount prop changes
   useEffect(() => {
@@ -80,13 +122,16 @@ export function DicePanel({
     rollDiceRef.current   = diceRef.current.slice()
     setResults({})
     setPressing(true)
-  }, [settling])
+    onPressStart?.(pressStartRef.current)
+  }, [settling, onPressStart])
 
   const handlePressEnd = useCallback(() => {
     if (!pressing) return
     setSettling(true)
     setPressing(false)
-  }, [pressing])
+    const duration = Date.now() - pressStartRef.current
+    onPressEnd?.(duration)
+  }, [pressing, onPressEnd])
 
   const handleResult = useCallback((id: number, value: number) => {
     setResults(prev => ({ ...prev, [id]: value }))
@@ -123,33 +168,43 @@ export function DicePanel({
         styles.panel,
         settling ? styles.panelLocked : '',
         transparent ? styles.panelTransparent : '',
+        disabled ? styles.panelDisabled : '',
       ].filter(Boolean).join(' ')}
-      onMouseDown={handlePressStart}
-      onMouseUp={handlePressEnd}
-      onMouseLeave={handlePressEnd}
-      onTouchStart={handlePressStart}
-      onTouchEnd={handlePressEnd}
+      onMouseDown={disabled ? undefined : handlePressStart}
+      onMouseUp={disabled ? undefined : handlePressEnd}
+      onMouseLeave={disabled ? undefined : handlePressEnd}
+      onTouchStart={disabled ? undefined : handlePressStart}
+      onTouchEnd={disabled ? undefined : handlePressEnd}
+      style={disabled ? { cursor: 'default', userSelect: 'none' } : undefined}
     >
       <div className={styles.diceArea}>
-        {dice.map(id => (
+        {dice.map((id, index) => (
           <CoinDice
             key={id}
-            pressing={pressing}
-            pressStart={pressStartRef.current}
+            pressing={effectivePressing}
+            pressStart={effectivePressStart}
             onResult={(v) => handleResult(id, v)}
+            targetValue={targetValues?.[index]}
+            holdDuration={holdDuration}
           />
         ))}
       </div>
 
       {/* Hint overlay */}
-      <p className={`${styles.hint} ${pressing ? styles.hintActive : ''}`}>
-        {pressing
-          ? 'Release to roll…'
-          : settling
-            ? 'Rolling…'
-            : allLanded
-              ? 'Hold to roll again'
-              : 'Hold to spin · Release to roll'}
+      <p className={`${styles.hint} ${effectivePressing ? styles.hintActive : ''}`}>
+        {disabled
+          ? (effectivePressing
+              ? 'Rolling…'
+              : allLanded
+                ? 'Spectating'
+                : 'Waiting for roll…')
+          : (effectivePressing
+              ? 'Release to roll…'
+              : settling
+                ? 'Rolling…'
+                : allLanded
+                  ? 'Hold to roll again'
+                  : 'Hold to spin · Release to roll')}
       </p>
 
       {/* Total inside panel */}

@@ -51,9 +51,20 @@ export interface CoinDiceProps {
   /** Date.now() captured when pressing became true. */
   pressStart: number
   onResult?: (value: number) => void
+  /** 
+   * Optional predetermined outcome (1-6). When set, the dice will land on this value.
+   * Perfect for multiplayer where one player rolls and others see the same result.
+   */
+  targetValue?: number
+  /**
+   * Optional hold duration in milliseconds. Used for cross-device multiplayer sync.
+   * When set, overrides the local hold time calculation with the roller's hold time.
+   * Send this value from roller to spectators along with targetValue.
+   */
+  holdDuration?: number
 }
 
-export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
+export function CoinDice({ pressing, pressStart, onResult, targetValue, holdDuration }: CoinDiceProps) {
   // Only phase + result drive React renders — faces & transform are pure DOM
   const [phase, setPhase]   = useState<Phase>('idle')
   const [result, setResult] = useState<number | null>(null)
@@ -75,6 +86,7 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
   const snapTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
   const snapAngleRef    = useRef(0)
   const lastTickTimeRef = useRef<number>(0)
+  const targetLockRef   = useRef(false)
 
   const setCoinTransform = (deg: number, transition?: string) => {
     const el = coinRef.current
@@ -108,6 +120,7 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
         velRef.current = 0
         // Determine which face is currently forward
         const isBackShowing   = lastHalfRotRef.current % 2 === 1
+        // Use the visible face (which was strategically placed during settling)
         const resultFaceValue = isBackShowing ? backFaceRef.current : frontFaceRef.current
         frontFaceRef.current  = resultFaceValue
         setFaceEl(frontFaceElRef.current, resultFaceValue)
@@ -136,6 +149,41 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
       const halfRot = Math.floor((angleRef.current + 90) / 180)
       if (halfRot !== lastHalfRotRef.current) {
         lastHalfRotRef.current = halfRot
+        
+        // In settling mode with targetValue, strategically place the target
+        if (ph === 'settling' && targetValue && !targetLockRef.current) {
+          const currentAngle = angleRef.current
+          const targetAngle = casinoTargetRef.current
+          const remainingRotation = targetAngle - currentAngle
+          const remainingHalfRots = Math.floor(remainingRotation / 180)
+          
+          // If we're within the last few flips, lock in the target value
+          if (remainingHalfRots <= 2) {
+            targetLockRef.current = true
+            // Determine if target angle will show front or back
+            const finalHalfRot = Math.floor((targetAngle + 90) / 180)
+            const willShowFront = finalHalfRot % 2 === 0
+            
+            if (willShowFront) {
+              // Target needs to be on front face
+              frontFaceRef.current = targetValue
+              setFaceEl(frontFaceElRef.current, targetValue)
+              // Back can be anything different
+              backFaceRef.current = randomFace(targetValue)
+              setFaceEl(backFaceElRef.current, backFaceRef.current)
+            } else {
+              // Target needs to be on back face
+              backFaceRef.current = targetValue
+              setFaceEl(backFaceElRef.current, targetValue)
+              // Front can be anything different
+              frontFaceRef.current = randomFace(targetValue)
+              setFaceEl(frontFaceElRef.current, frontFaceRef.current)
+            }
+            return // Skip normal randomization
+          }
+        }
+        
+        // Normal randomization for spinning or early settling
         if (halfRot % 2 === 1) {
           // Back now visible — randomise hidden front
           const next = randomFace(backFaceRef.current)
@@ -163,6 +211,7 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
       if (snapTimerRef.current) { clearTimeout(snapTimerRef.current); snapTimerRef.current = null }
       lastHalfRotRef.current  = Math.floor((angleRef.current + 90) / 180)
       lastTickTimeRef.current = 0  // reset dt on new press
+      targetLockRef.current = false  // reset target lock
       setResult(null)
       resultRef.current = null
       const newBack = randomFace(frontFaceRef.current)
@@ -174,7 +223,8 @@ export function CoinDice({ pressing, pressStart, onResult }: CoinDiceProps) {
       rafRef.current = requestAnimationFrame(tick)
     } else {
       if (phaseRef.current !== 'spinning') return
-      const holdMs = Date.now() - pressStart
+      // Use provided holdDuration for multiplayer sync, or calculate locally
+      const holdMs = holdDuration ?? (Date.now() - pressStart)
       const t      = Math.min(holdMs / MAX_HOLD_MS, 1)
       decelRef.current = DECEL_MIN + t * (DECEL_MAX - DECEL_MIN)
       const baseCoast     = COAST_MIN + t * (COAST_MAX - COAST_MIN)
