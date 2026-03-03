@@ -6,6 +6,7 @@ Designed to be embedded in other games as a library with **full multiplayer sync
 ## Features
 
 - 🎲 **Hold & Release** - Natural dice rolling with physics-based animation
+- 📱 **Mobile-Friendly** - Proper touch event handling (`touchstart`, `touchend`, `touchcancel`) with `preventDefault` to prevent browser interference on mobile
 - 🎮 **Multiplayer Ready** - Built-in support for predetermined outcomes (perfect for syncing rolls across devices)
 - 🎨 **Customizable** - Transparent mode, callbacks, configurable dice count
 - ⚡ **Performant** - Pure DOM manipulation for smooth 60fps animations
@@ -46,6 +47,7 @@ import 'dice-flip/dist/index.css'
 |---|---|---|---|
 | `diceCount` | `number` | `1` | Number of dice to start with. |
 | `showAddButton` | `boolean` | `true` | Show or hide the **+** button that lets the player add more dice at runtime. |
+| `showTotal` | `boolean` | `false` | When `true`, displays a **Total** label inside the panel once all dice have landed. Only visible with 2+ dice. |
 | `transparent` | `boolean` | `false` | When `true`, removes the panel background, border and box-shadow — ideal for placing the component directly over a custom game UI. |
 | `onDieLanded` | `(index: number, value: number) => void` | — | Called each time an individual die lands. `index` is the die's 0-based position in the panel; `value` is its result (1–6). |
 | `onAllLanded` | `(results: number[], total: number) => void` | — | Called once every die in a roll has landed. `results` contains each die's value in order; `total` is their sum. |

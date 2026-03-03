@@ -83,10 +83,10 @@ export function CoinDice({ pressing, pressStart, onResult, targetValue, holdDura
   const lastHalfRotRef  = useRef(0)
   const casinoTargetRef = useRef(0)
   const decelRef        = useRef(DECEL_MIN)
-  const snapTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const snapAngleRef    = useRef(0)
-  const lastTickTimeRef = useRef<number>(0)
-  const targetLockRef   = useRef(false)
+  const snapTimerRef       = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const snapAngleRef       = useRef(0)
+  const lastTickTimeRef    = useRef<number>(0)
+  const targetLockRef      = useRef(false)
 
   const setCoinTransform = (deg: number, transition?: string) => {
     const el = coinRef.current
@@ -119,16 +119,21 @@ export function CoinDice({ pressing, pressStart, onResult, targetValue, holdDura
       if ((pastTarget && nearlyStop) || essentiallyStop) {
         velRef.current = 0
         // Determine which face is currently forward
-        const isBackShowing   = lastHalfRotRef.current % 2 === 1
-        // Use the visible face (which was strategically placed during settling)
-        const resultFaceValue = isBackShowing ? backFaceRef.current : frontFaceRef.current
-        frontFaceRef.current  = resultFaceValue
+        const isBackShowing = lastHalfRotRef.current % 2 === 1
+        const resultFaceValue = targetValue
+          ?? (isBackShowing ? backFaceRef.current : frontFaceRef.current)
+        // Set BOTH faces to the result value before snapping.
+        // The snap CSS animation can cross half-rotation boundaries, briefly showing
+        // whichever face is hidden — setting both to the same value makes it seamless.
+        frontFaceRef.current = resultFaceValue
+        backFaceRef.current  = resultFaceValue
         setFaceEl(frontFaceElRef.current, resultFaceValue)
+        setFaceEl(backFaceElRef.current,  resultFaceValue)
         // Snap to nearest 0° (front-face-forward)
         snapAngleRef.current = Math.round(angleRef.current / 360) * 360
         phaseRef.current = 'snapping'
         setPhase('snapping')
-        setCoinTransform(snapAngleRef.current, 'transform 220ms ease-out')
+        setCoinTransform(snapAngleRef.current, 'transform 400ms ease-out')
         snapTimerRef.current = setTimeout(() => {
           angleRef.current  = snapAngleRef.current
           phaseRef.current  = 'landed'
@@ -137,7 +142,7 @@ export function CoinDice({ pressing, pressStart, onResult, targetValue, holdDura
           setResult(resultFaceValue)
           onResult?.(resultFaceValue)
           setCoinTransform(snapAngleRef.current)
-        }, 350)
+        }, 450)
         return
       }
     }
@@ -149,51 +154,46 @@ export function CoinDice({ pressing, pressStart, onResult, targetValue, holdDura
       const halfRot = Math.floor((angleRef.current + 90) / 180)
       if (halfRot !== lastHalfRotRef.current) {
         lastHalfRotRef.current = halfRot
-        
-        // In settling mode with targetValue, strategically place the target
-        if (ph === 'settling' && targetValue && !targetLockRef.current) {
-          const currentAngle = angleRef.current
-          const targetAngle = casinoTargetRef.current
-          const remainingRotation = targetAngle - currentAngle
-          const remainingHalfRots = Math.floor(remainingRotation / 180)
-          
-          // If we're within the last few flips, lock in the target value
-          if (remainingHalfRots <= 2) {
+
+        if (ph === 'settling' && !targetLockRef.current) {
+          const remaining = casinoTargetRef.current - angleRef.current
+          if (remaining < 180) {
+            // We're inside the last half-rotation — this is the final visible face.
+            // Lock only the currently-visible face to the target. Leave the hidden
+            // face random so if any overshoot flips past, it won't show target twice.
             targetLockRef.current = true
-            // Determine if target angle will show front or back
-            const finalHalfRot = Math.floor((targetAngle + 90) / 180)
-            const willShowFront = finalHalfRot % 2 === 0
-            
-            if (willShowFront) {
-              // Target needs to be on front face
-              frontFaceRef.current = targetValue
-              setFaceEl(frontFaceElRef.current, targetValue)
-              // Back can be anything different
-              backFaceRef.current = randomFace(targetValue)
-              setFaceEl(backFaceElRef.current, backFaceRef.current)
+            const isBackVisible = halfRot % 2 === 1
+            const result = targetValue ?? (isBackVisible ? backFaceRef.current : frontFaceRef.current)
+            if (isBackVisible) {
+              backFaceRef.current = result
+              setFaceEl(backFaceElRef.current, result)
             } else {
-              // Target needs to be on back face
-              backFaceRef.current = targetValue
-              setFaceEl(backFaceElRef.current, targetValue)
-              // Front can be anything different
-              frontFaceRef.current = randomFace(targetValue)
-              setFaceEl(frontFaceElRef.current, frontFaceRef.current)
+              frontFaceRef.current = result
+              setFaceEl(frontFaceElRef.current, result)
             }
-            return // Skip normal randomization
+          } else {
+            // Not yet in final half-rotation — randomize freely
+            if (halfRot % 2 === 1) {
+              const next = randomFace(backFaceRef.current)
+              frontFaceRef.current = next
+              setFaceEl(frontFaceElRef.current, next)
+            } else {
+              const next = randomFace(frontFaceRef.current)
+              backFaceRef.current = next
+              setFaceEl(backFaceElRef.current, next)
+            }
           }
-        }
-        
-        // Normal randomization for spinning or early settling
-        if (halfRot % 2 === 1) {
-          // Back now visible — randomise hidden front
-          const next = randomFace(backFaceRef.current)
-          frontFaceRef.current = next
-          setFaceEl(frontFaceElRef.current, next)
-        } else {
-          // Front now visible — randomise hidden back
-          const next = randomFace(frontFaceRef.current)
-          backFaceRef.current = next
-          setFaceEl(backFaceElRef.current, next)
+        } else if (!targetLockRef.current) {
+          // Free randomization during spin
+          if (halfRot % 2 === 1) {
+            const next = randomFace(backFaceRef.current)
+            frontFaceRef.current = next
+            setFaceEl(frontFaceElRef.current, next)
+          } else {
+            const next = randomFace(frontFaceRef.current)
+            backFaceRef.current = next
+            setFaceEl(backFaceElRef.current, next)
+          }
         }
       }
     }
@@ -229,9 +229,11 @@ export function CoinDice({ pressing, pressStart, onResult, targetValue, holdDura
       decelRef.current = DECEL_MIN + t * (DECEL_MAX - DECEL_MIN)
       const baseCoast     = COAST_MIN + t * (COAST_MAX - COAST_MIN)
       const extraRotation = baseCoast * (0.85 + Math.random() * 0.3)
-      casinoTargetRef.current = angleRef.current + extraRotation
-      // Ensure enough velocity to actually coast to target
-      const minVel = (extraRotation / TARGET_MS) * (1 - decelRef.current)
+      // Round casino target to the nearest full 360° so the die arrives face-forward.
+      casinoTargetRef.current = Math.round((angleRef.current + extraRotation) / 360) * 360
+      targetLockRef.current = false
+      // Ensure enough velocity to reach the rounded target
+      const minVel = (casinoTargetRef.current - angleRef.current) / TARGET_MS * (1 - decelRef.current)
       velRef.current = Math.min(Math.max(velRef.current, minVel), MAX_VEL)
       setPhaseSync('settling')
     }

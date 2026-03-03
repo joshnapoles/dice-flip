@@ -61,6 +61,11 @@ export interface DicePanelProps {
    * Called when user stops pressing (for controlling other panels).
    */
   onPressEnd?: (holdDuration: number) => void
+  /**
+   * When true, shows a "Total" label inside the panel after all dice have landed.
+   * Defaults to false.
+   */
+  showTotal?: boolean
 }
 
 let nextId = 1
@@ -84,6 +89,7 @@ export function DicePanel({
   holdDuration,
   onPressStart,
   onPressEnd,
+  showTotal = false,
 }: DicePanelProps) {
   const [dice, setDice]         = useState<number[]>(() => makeIds(diceCount))
   const [results, setResults]   = useState<Record<number, number | null>>({})
@@ -133,6 +139,18 @@ export function DicePanel({
     onPressEnd?.(duration)
   }, [pressing, onPressEnd])
 
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    // Prevent the browser from firing synthetic mouse events (mousedown/mouseleave)
+    // which can interfere with press tracking on mobile.
+    e.preventDefault()
+    handlePressStart()
+  }, [handlePressStart])
+
+  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
+    e.preventDefault()
+    handlePressEnd()
+  }, [handlePressEnd])
+
   const handleResult = useCallback((id: number, value: number) => {
     setResults(prev => ({ ...prev, [id]: value }))
     if (onDieLanded) {
@@ -173,8 +191,9 @@ export function DicePanel({
       onMouseDown={disabled ? undefined : handlePressStart}
       onMouseUp={disabled ? undefined : handlePressEnd}
       onMouseLeave={disabled ? undefined : handlePressEnd}
-      onTouchStart={disabled ? undefined : handlePressStart}
-      onTouchEnd={disabled ? undefined : handlePressEnd}
+      onTouchStart={disabled ? undefined : handleTouchStart}
+      onTouchEnd={disabled ? undefined : handleTouchEnd}
+      onTouchCancel={disabled ? undefined : handlePressEnd}
       style={disabled ? { cursor: 'default', userSelect: 'none' } : undefined}
     >
       <div className={styles.diceArea}>
@@ -208,7 +227,7 @@ export function DicePanel({
       </p>
 
       {/* Total inside panel */}
-      {total !== null && (
+      {showTotal && total !== null && (
         <div className={styles.total}>
           Total&nbsp;<span className={styles.totalNum}>{total}</span>
         </div>
