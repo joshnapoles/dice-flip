@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CoinDice } from '../Dice/CoinDice'
+import { CoinDice, COAST_MIN, COAST_MAX, MAX_HOLD_MS } from '../Dice/CoinDice'
 import styles from './DicePanel.module.css'
 
 export interface DicePanelProps {
@@ -59,8 +59,28 @@ export interface DicePanelProps {
   onPressStart?: (timestamp: number) => void
   /**
    * Called when user stops pressing (for controlling other panels).
+   * Also receives the scheduled settle timestamp and per-die coast distances
+   * so they can be forwarded over the network to all spectator panels.
    */
-  onPressEnd?: (holdDuration: number) => void
+  onPressEnd?: (holdDuration: number, settleAt: number, extraRotations: number[]) => void
+  /**
+   * Absolute wall-clock timestamp (Date.now()) at which ALL dice in this panel
+   * should begin decelerating. Pass the value received from the roller's
+   * onPressEnd to keep spectator panels perfectly in sync.
+   */
+  settleAt?: number
+  /**
+   * Per-die coast distances in degrees, one entry per die in panel order.
+   * Pass the value received from the roller's onPressEnd so every client
+   * coasts the same arc and therefore lands at the same moment.
+   */
+  extraRotations?: number[]
+  /**
+   * How many milliseconds into the future the roller schedules settling.
+   * Must be ≥ the worst-case one-way network delay so spectators always
+   * receive the settle message before the deadline. Defaults to 1000 ms.
+   */
+  networkBuffer?: number
   /**
    * When true, shows a "Total" label inside the panel after all dice have landed.
    * Defaults to false.
@@ -90,11 +110,16 @@ export function DicePanel({
   onPressStart,
   onPressEnd,
   showTotal = false,
+  settleAt,
+  extraRotations,
+  networkBuffer = 1000,
 }: DicePanelProps) {
-  const [dice, setDice]         = useState<number[]>(() => makeIds(diceCount))
-  const [results, setResults]   = useState<Record<number, number | null>>({})
-  const [pressing, setPressing] = useState(false)
-  const [settling, setSettling] = useState(false)
+  const [dice, setDice]                   = useState<number[]>(() => makeIds(diceCount))
+  const [results, setResults]             = useState<Record<number, number | null>>({})
+  const [pressing, setPressing]           = useState(false)
+  const [settling, setSettling]           = useState(false)
+  const [localSettleAt, setLocalSettleAt] = useState<number | undefined>(undefined)
+  const [localExtraRotations, setLocalExtraRotations] = useState<number[] | undefined>(undefined)
 
   const pressStartRef = useRef<number>(0)
   const diceRef       = useRef<number[]>([])
@@ -112,6 +137,8 @@ export function DicePanel({
     setResults({})
     setPressing(false)
     setSettling(false)
+    setLocalSettleAt(undefined)
+    setLocalExtraRotations(undefined)
   // Only re-run when diceCount changes — ignore function-identity churn
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [diceCount])
@@ -127,17 +154,29 @@ export function DicePanel({
     pressStartRef.current = Date.now()
     rollDiceRef.current   = diceRef.current.slice()
     setResults({})
+    setLocalSettleAt(undefined)
+    setLocalExtraRotations(undefined)
     setPressing(true)
     onPressStart?.(pressStartRef.current)
   }, [settling, onPressStart])
 
   const handlePressEnd = useCallback(() => {
     if (!pressing) return
+    const duration  = Date.now() - pressStartRef.current
+    const scheduleAt = Date.now() + networkBuffer
+
+    // Pre-compute per-die coast distances using the same formula as CoinDice so
+    // we can send them to spectators and guarantee identical animation arcs.
+    const t         = Math.min(duration / MAX_HOLD_MS, 1)
+    const baseCoast = COAST_MIN + t * (COAST_MAX - COAST_MIN)
+    const rotations = rollDiceRef.current.map(() => baseCoast * (0.85 + Math.random() * 0.3))
+
+    setLocalSettleAt(scheduleAt)
+    setLocalExtraRotations(rotations)
     setSettling(true)
     setPressing(false)
-    const duration = Date.now() - pressStartRef.current
-    onPressEnd?.(duration)
-  }, [pressing, onPressEnd])
+    onPressEnd?.(duration, scheduleAt, rotations)
+  }, [pressing, onPressEnd, networkBuffer])
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     // Prevent the browser from firing synthetic mouse events (mousedown/mouseleave)
@@ -205,6 +244,8 @@ export function DicePanel({
             onResult={(v) => handleResult(id, v)}
             targetValue={targetValues?.[index]}
             holdDuration={holdDuration}
+            settleAt={localSettleAt ?? settleAt}
+            extraRotation={(localExtraRotations ?? extraRotations)?.[index]}
           />
         ))}
       </div>

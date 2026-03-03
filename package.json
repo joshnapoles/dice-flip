@@ -1,6 +1,6 @@
 {
   "name": "dice-flip",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "type": "module",
   "description": "Tactile dice-flip component library for React with multiplayer sync support — configurable DicePanel with CSS Modules",
   "keywords": [

@@ -34,9 +34,9 @@ const MAX_VEL      = 14
 const ACCEL        = 0.18
 const DECEL_MIN    = 0.982
 const DECEL_MAX    = 0.990
-const COAST_MIN    = 360
-const COAST_MAX    = 900
-const MAX_HOLD_MS  = 2000
+export const COAST_MIN    = 360
+export const COAST_MAX    = 900
+export const MAX_HOLD_MS  = 2000
 const TARGET_MS    = 1000 / 60  // reference frame time (60 fps)
 
 function randomFace(exclude?: number): number {
@@ -62,9 +62,24 @@ export interface CoinDiceProps {
    * Send this value from roller to spectators along with targetValue.
    */
   holdDuration?: number
+  /**
+   * Absolute wall-clock timestamp (Date.now()) at which the die should begin
+   * decelerating. Both the roller and spectators receive the same value so the
+   * animation starts — and therefore ends — at the same instant regardless of
+   * network delay. When omitted the die starts settling immediately on release
+   * (legacy / single-player behaviour).
+   */
+  settleAt?: number
+  /**
+   * Pre-computed coast distance in degrees for this die. When provided the die
+   * uses this value instead of a fresh Math.random() call, guaranteeing that
+   * roller and spectators travel the same arc and therefore land at the same time.
+   * Compute once in DicePanel at press-end and forward to all clients.
+   */
+  extraRotation?: number
 }
 
-export function CoinDice({ pressing, pressStart, onResult, targetValue, holdDuration }: CoinDiceProps) {
+export function CoinDice({ pressing, pressStart, onResult, targetValue, holdDuration, settleAt, extraRotation }: CoinDiceProps) {
   // Only phase + result drive React renders — faces & transform are pure DOM
   const [phase, setPhase]   = useState<Phase>('idle')
   const [result, setResult] = useState<number | null>(null)
@@ -87,6 +102,14 @@ export function CoinDice({ pressing, pressStart, onResult, targetValue, holdDura
   const snapAngleRef       = useRef(0)
   const lastTickTimeRef    = useRef<number>(0)
   const targetLockRef      = useRef(false)
+  const targetValueRef     = useRef(targetValue)
+  targetValueRef.current   = targetValue
+
+  // Pending-settle state: set when pressing ends but settleAt is in the future.
+  // The tick loop watches the RAF timestamp and applies these at the right moment.
+  const settleAtRef        = useRef<number>(0)
+  const pendingDecelRef    = useRef<number>(DECEL_MIN)
+  const pendingExtraRotRef = useRef<number>(0)
 
   const setCoinTransform = (deg: number, transition?: string) => {
     const el = coinRef.current
@@ -108,7 +131,24 @@ export function CoinDice({ pressing, pressStart, onResult, targetValue, holdDura
     const ph = phaseRef.current
 
     if (ph === 'spinning') {
-      velRef.current = Math.min(velRef.current + ACCEL * dt, MAX_VEL)
+      // Check if a scheduled settle time has arrived.
+      // settleAt is a Date.now() wall-clock value; compare against Date.now()
+      // (not the RAF performance.now `now`) to avoid a time-base mismatch.
+      if (settleAtRef.current > 0 && Date.now() >= settleAtRef.current) {
+        decelRef.current        = pendingDecelRef.current
+        casinoTargetRef.current = Math.round(
+          (angleRef.current + pendingExtraRotRef.current) / 360
+        ) * 360
+        targetLockRef.current   = false
+        const minVel = (casinoTargetRef.current - angleRef.current) / TARGET_MS * (1 - decelRef.current)
+        velRef.current          = Math.min(Math.max(velRef.current, minVel), MAX_VEL)
+        settleAtRef.current     = 0
+        phaseRef.current        = 'settling'
+        setPhase('settling')
+        // Don't accelerate this frame; fall through so the angle still advances.
+      } else {
+        velRef.current = Math.min(velRef.current + ACCEL * dt, MAX_VEL)
+      }
 
     } else if (ph === 'settling') {
       velRef.current *= Math.pow(decelRef.current, dt)
@@ -120,7 +160,7 @@ export function CoinDice({ pressing, pressStart, onResult, targetValue, holdDura
         velRef.current = 0
         // Determine which face is currently forward
         const isBackShowing = lastHalfRotRef.current % 2 === 1
-        const resultFaceValue = targetValue
+        const resultFaceValue = targetValueRef.current
           ?? (isBackShowing ? backFaceRef.current : frontFaceRef.current)
         // Set BOTH faces to the result value before snapping.
         // The snap CSS animation can cross half-rotation boundaries, briefly showing
@@ -163,7 +203,7 @@ export function CoinDice({ pressing, pressStart, onResult, targetValue, holdDura
             // face random so if any overshoot flips past, it won't show target twice.
             targetLockRef.current = true
             const isBackVisible = halfRot % 2 === 1
-            const result = targetValue ?? (isBackVisible ? backFaceRef.current : frontFaceRef.current)
+            const result = targetValueRef.current ?? (isBackVisible ? backFaceRef.current : frontFaceRef.current)
             if (isBackVisible) {
               backFaceRef.current = result
               setFaceEl(backFaceElRef.current, result)
@@ -224,21 +264,35 @@ export function CoinDice({ pressing, pressStart, onResult, targetValue, holdDura
     } else {
       if (phaseRef.current !== 'spinning') return
       // Use provided holdDuration for multiplayer sync, or calculate locally
-      const holdMs = holdDuration ?? (Date.now() - pressStart)
-      const t      = Math.min(holdMs / MAX_HOLD_MS, 1)
-      decelRef.current = DECEL_MIN + t * (DECEL_MAX - DECEL_MIN)
-      const baseCoast     = COAST_MIN + t * (COAST_MAX - COAST_MIN)
-      const extraRotation = baseCoast * (0.85 + Math.random() * 0.3)
-      // Round casino target to the nearest full 360° so the die arrives face-forward.
-      casinoTargetRef.current = Math.round((angleRef.current + extraRotation) / 360) * 360
-      targetLockRef.current = false
-      // Ensure enough velocity to reach the rounded target
-      const minVel = (casinoTargetRef.current - angleRef.current) / TARGET_MS * (1 - decelRef.current)
-      velRef.current = Math.min(Math.max(velRef.current, minVel), MAX_VEL)
-      setPhaseSync('settling')
+      const holdMs   = holdDuration ?? (Date.now() - pressStart)
+      const t        = Math.min(holdMs / MAX_HOLD_MS, 1)
+      const decel    = DECEL_MIN + t * (DECEL_MAX - DECEL_MIN)
+      const baseCoast = COAST_MIN + t * (COAST_MAX - COAST_MIN)
+      // Use the caller-supplied extraRotation (forwarded from the roller) so
+      // all clients coast the same arc. Fall back to a local random only when
+      // no value is provided (single-player / legacy mode).
+      const coast = extraRotation ?? (baseCoast * (0.85 + Math.random() * 0.3))
+
+      if (settleAt && settleAt > Date.now()) {
+        // Deferred settling: store params and let the tick loop apply them at settleAt.
+        pendingDecelRef.current    = decel
+        pendingExtraRotRef.current = coast
+        settleAtRef.current        = settleAt
+        // Keep phase as 'spinning' — the die continues to spin freely until then.
+      } else {
+        // Immediate settling (no settleAt, or it's already in the past).
+        decelRef.current = decel
+        // Round casino target to the nearest full 360° so the die arrives face-forward.
+        casinoTargetRef.current = Math.round((angleRef.current + coast) / 360) * 360
+        targetLockRef.current = false
+        // Ensure enough velocity to reach the rounded target
+        const minVel = (casinoTargetRef.current - angleRef.current) / TARGET_MS * (1 - decelRef.current)
+        velRef.current = Math.min(Math.max(velRef.current, minVel), MAX_VEL)
+        setPhaseSync('settling')
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pressing])
+  }, [pressing, settleAt, extraRotation, holdDuration])
 
   useEffect(() => () => {
     cancelAnimationFrame(rafRef.current)
