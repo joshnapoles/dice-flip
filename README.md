@@ -289,6 +289,26 @@ npm run build   # Build library for distribution
 npm run lint    # Run ESLint
 ```
 
+## Releasing
+
+A single command handles the full release cycle:
+
+```bash
+npm run release           # interactive — prompts for bump type
+npm run release -- patch  # 0.x.y → 0.x.(y+1)
+npm run release -- minor  # 0.x.y → 0.(x+1).0
+npm run release -- major  # 0.x.y → (x+1).0.0
+```
+
+The script will:
+1. Print a pre-release checklist (README updated?)
+2. Bump the version in `package.json`
+3. Build and publish to npm
+4. `git commit` all staged changes as `chore: release vX.Y.Z` and push to `main`
+5. Build and deploy the static demo via `gh-pages`
+
+**For an agent:** update `README.md` with what changed, then run `npm run release -- <patch|minor|major>`.
+
 ## License
 
 MIT
