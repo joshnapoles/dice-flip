@@ -4,3 +4,7 @@ export type { DicePanelProps } from './components/DicePanel/DicePanel'
 
 export { CoinDice }       from './components/Dice/CoinDice'
 export type { CoinDiceProps } from './components/Dice/CoinDice'
+
+// Spin math — pure, deterministic functions for multiplayer sync
+export { createSettlePlan, settleAngle, spinAngle, spinVelocity, halfRotation, easeOut } from './spinMath'
+export type { SettlePlan } from './spinMath'

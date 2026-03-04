@@ -5,20 +5,31 @@ Designed to be embedded in other games as a library with **full multiplayer sync
 
 ## Features
 
-- 🎲 **Hold & Release** - Natural dice rolling with physics-based animation
-- 📱 **Mobile-Friendly** - Proper touch event handling (`touchstart`, `touchend`, `touchcancel`) with `preventDefault` to prevent browser interference on mobile
-- 🎮 **Multiplayer Ready** - Built-in support for predetermined outcomes (perfect for syncing rolls across devices)
-- 🎨 **Customizable** - Transparent mode, callbacks, configurable dice count
-- ⚡ **Performant** - Pure DOM manipulation for smooth 60fps animations
-- 📦 **Zero Dependencies** - Just React (peer dependency)
+- 🎲 **Hold & Release** — Natural, tactile dice rolling
+- 🕐 **Time-based animation** — Pure math, not frame-by-frame physics. Identical result on every device at every frame rate.
+- 🌐 **Multiplayer & lag-tolerant** — Late-joining spectators catch up instantly by computing angle from elapsed time
+- 🎨 **Customizable** — Transparent mode, callbacks, configurable dice count
+- ⚡ **Performant** — Pure DOM transform updates inside a RAF loop; zero React re-renders during animation
+- 📦 **Zero runtime dependencies** — Just React (peer dependency)
 
 ## How it works
 
 - **Hold** anywhere on the panel to spin all dice
-- **Release** to let them coast to a random result
-- While dice are coasting you cannot start a new roll — wait for them all to land
+- **Release** to let them decelerate to a result — the dice keep their 3D flip and gradually slow to a stop
+- While dice are settling you cannot start a new roll — wait for them all to land
 - Once every die has landed, the **Total** is shown (with 2+ dice)
 - Press **+** (top-right corner) to add more dice (when enabled)
+
+### Animation architecture
+
+In v0.6.0 the spin animation was rebuilt ground-up around **pure time-based math** via the exported `spinMath` module:
+
+| Phase | Function | Description |
+|---|---|---|
+| Pressing | `spinAngle(base, elapsedMs)` | Quadratic ramp-up then constant velocity |
+| Released | `settleAngle(plan, elapsedMs)` | Velocity-matched ease-out to a fixed landing angle |
+
+A `SettlePlan` fully describes the deceleration — both the local and remote client compute the same angle at any given millisecond. The ease-out exponent is solved analytically so the initial settle velocity exactly matches the spin velocity at release, eliminating any speed discontinuity.
 
 ## Installation
 

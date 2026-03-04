@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import styles from './CoinDice.module.css'
+import {
+  spinAngle,
+  createSettlePlan,
+  settleAngle,
+  halfRotation,
+  type SettlePlan,
+} from '../../spinMath'
 
 // ─── Pip helpers (pure DOM — no React re-renders during animation) ────────────
 
@@ -26,24 +33,28 @@ function setFaceEl(el: HTMLDivElement | null, value: number | 'idle') {
   if (el) el.innerHTML = value === 'idle' ? IDLE_HTML : makePipSVG(value)
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
-
-type Phase = 'idle' | 'spinning' | 'settling' | 'snapping' | 'landed'
-
-const MAX_VEL      = 14
-const ACCEL        = 0.18
-const DECEL_MIN    = 0.982
-const DECEL_MAX    = 0.990
-export const COAST_MIN    = 360
-export const COAST_MAX    = 900
-export const MAX_HOLD_MS  = 2000
-const TARGET_MS    = 1000 / 60  // reference frame time (60 fps)
-
 function randomFace(exclude?: number): number {
   let n: number
   do { n = Math.floor(Math.random() * 6) + 1 } while (n === exclude)
   return n
 }
+
+// ─── Main component ───────────────────────────────────────────────────────────
+//
+// Animation is time-based, not frame-based:
+//   • Spin phase  → spinAngle(base, elapsed)     (open-ended, local-only)
+//   • Settle phase → settleAngle(plan, elapsed)   (deterministic, syncable)
+//   • Landed       → fixed angle                  (no animation)
+//
+// The RAF loop is purely a rendering pump — it reads the current time,
+// computes the angle from a pure function, and sets the CSS transform.
+// No per-frame velocity accumulation, no delta-time compensation.
+//
+// For multiplayer:  broadcast { targetValue, holdDuration } on release.
+// Each client creates its own local SettlePlan — same result, similar timing,
+// but anchored to its own current angle.
+
+type Phase = 'idle' | 'spinning' | 'settling' | 'landed'
 
 export interface CoinDiceProps {
   /** True while the user is holding; false when they release. */
@@ -51,253 +62,176 @@ export interface CoinDiceProps {
   /** Date.now() captured when pressing became true. */
   pressStart: number
   onResult?: (value: number) => void
-  /** 
-   * Optional predetermined outcome (1-6). When set, the dice will land on this value.
-   * Perfect for multiplayer where one player rolls and others see the same result.
+  /**
+   * Predetermined outcome (1–6). The dice will land on this value.
+   * For multiplayer: the roller picks it, spectators receive it.
    */
   targetValue?: number
   /**
-   * Optional hold duration in milliseconds. Used for cross-device multiplayer sync.
-   * When set, overrides the local hold time calculation with the roller's hold time.
-   * Send this value from roller to spectators along with targetValue.
+   * Hold duration in ms from the roller. Overrides local hold calculation
+   * so spectators get similar settle timing.
    */
   holdDuration?: number
-  /**
-   * Absolute wall-clock timestamp (Date.now()) at which the die should begin
-   * decelerating. Both the roller and spectators receive the same value so the
-   * animation starts — and therefore ends — at the same instant regardless of
-   * network delay. When omitted the die starts settling immediately on release
-   * (legacy / single-player behaviour).
-   */
-  settleAt?: number
-  /**
-   * Pre-computed coast distance in degrees for this die. When provided the die
-   * uses this value instead of a fresh Math.random() call, guaranteeing that
-   * roller and spectators travel the same arc and therefore land at the same time.
-   * Compute once in DicePanel at press-end and forward to all clients.
-   */
-  extraRotation?: number
 }
 
-export function CoinDice({ pressing, pressStart, onResult, targetValue, holdDuration, settleAt, extraRotation }: CoinDiceProps) {
-  // Only phase + result drive React renders — faces & transform are pure DOM
+export function CoinDice({ pressing, pressStart, onResult, targetValue, holdDuration }: CoinDiceProps) {
+  // ── React state (only these cause re-renders) ─────────────────────────────
   const [phase, setPhase]   = useState<Phase>('idle')
   const [result, setResult] = useState<number | null>(null)
 
+  // ── DOM refs ──────────────────────────────────────────────────────────────
   const coinRef        = useRef<HTMLDivElement>(null)
   const frontFaceElRef = useRef<HTMLDivElement>(null)
   const backFaceElRef  = useRef<HTMLDivElement>(null)
 
-  const phaseRef        = useRef<Phase>('idle')
-  const angleRef        = useRef(0)
-  const velRef          = useRef(0)
-  const resultRef       = useRef<number | null>(null)
-  const rafRef          = useRef<number>(0)
-  const frontFaceRef    = useRef(1)
-  const backFaceRef     = useRef(4)
-  const lastHalfRotRef  = useRef(0)
-  const casinoTargetRef = useRef(0)
-  const decelRef        = useRef(DECEL_MIN)
-  const snapTimerRef       = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const snapAngleRef       = useRef(0)
-  const lastTickTimeRef    = useRef<number>(0)
-  const targetLockRef      = useRef(false)
-  const targetValueRef     = useRef(targetValue)
-  targetValueRef.current   = targetValue
+  // ── Animation refs (mutated inside RAF — no React re-renders) ─────────────
+  const phaseRef       = useRef<Phase>('idle')
+  const angleRef       = useRef(0)
+  const rafRef         = useRef(0)
+  const resultRef      = useRef<number | null>(null)
 
-  // Pending-settle state: set when pressing ends but settleAt is in the future.
-  // The tick loop watches the RAF timestamp and applies these at the right moment.
-  const settleAtRef        = useRef<number>(0)
-  const pendingDecelRef    = useRef<number>(DECEL_MIN)
-  const pendingExtraRotRef = useRef<number>(0)
+  // Spin-phase tracking
+  const spinStartRef   = useRef(0)   // performance.now() at spin start
+  const baseAngleRef   = useRef(0)   // angle when spin started
 
-  const setCoinTransform = (deg: number, transition?: string) => {
+  // Settle-phase tracking
+  const planRef        = useRef<SettlePlan | null>(null)
+  const settleStartRef = useRef(0)   // performance.now() at settle start
+
+  // Face tracking
+  const frontFaceRef   = useRef(1)
+  const backFaceRef    = useRef(4)
+  const lastHalfRotRef = useRef(0)
+  const facePinnedRef  = useRef(false) // true once target face is locked in
+
+  // Stable callback ref (avoids stale closure in long-running RAF loop)
+  const onResultRef    = useRef(onResult)
+  onResultRef.current  = onResult
+
+  const setCoinTransform = (deg: number) => {
     const el = coinRef.current
     if (!el) return
-    el.style.transition = transition ?? ''
-    el.style.transform  = `rotateY(${deg}deg)`
+    el.style.transform = `rotateY(${deg}deg)`
   }
 
   const setPhaseSync = (p: Phase) => { phaseRef.current = p; setPhase(p) }
 
-  // tick receives the RAF high-res timestamp for delta-time–normalised physics
-  const tick = useCallback((now: number) => {
-    // Normalise elapsed time to 60 fps so physics is framerate-independent.
-    // Clamp to 3× target to avoid huge jumps after tab switches.
-    const raw = lastTickTimeRef.current ? now - lastTickTimeRef.current : TARGET_MS
-    const dt  = Math.min(raw, TARGET_MS * 3) / TARGET_MS
-    lastTickTimeRef.current = now
-
-    const ph = phaseRef.current
+  // ── RAF tick ──────────────────────────────────────────────────────────────
+  // Reads current time → computes angle from pure math → sets transform.
+  // No velocity accumulation.  No delta-time normalisation.  Fully deterministic
+  // for the settle phase, tolerant of tab-switch / frame-drop for the spin phase.
+  const tick = useCallback(() => {
+    const now = performance.now()
+    const ph  = phaseRef.current
+    let angle = angleRef.current
 
     if (ph === 'spinning') {
-      // Check if a scheduled settle time has arrived.
-      // settleAt is a Date.now() wall-clock value; compare against Date.now()
-      // (not the RAF performance.now `now`) to avoid a time-base mismatch.
-      if (settleAtRef.current > 0 && Date.now() >= settleAtRef.current) {
-        decelRef.current        = pendingDecelRef.current
-        casinoTargetRef.current = Math.round(
-          (angleRef.current + pendingExtraRotRef.current) / 360
-        ) * 360
-        targetLockRef.current   = false
-        const minVel = (casinoTargetRef.current - angleRef.current) / TARGET_MS * (1 - decelRef.current)
-        velRef.current          = Math.min(Math.max(velRef.current, minVel), MAX_VEL)
-        settleAtRef.current     = 0
-        phaseRef.current        = 'settling'
-        setPhase('settling')
-        // Don't accelerate this frame; fall through so the angle still advances.
-      } else {
-        velRef.current = Math.min(velRef.current + ACCEL * dt, MAX_VEL)
-      }
+      angle = spinAngle(baseAngleRef.current, now - spinStartRef.current)
 
     } else if (ph === 'settling') {
-      velRef.current *= Math.pow(decelRef.current, dt)
+      const plan    = planRef.current!
+      const elapsed = now - settleStartRef.current
+      angle = settleAngle(plan, elapsed)
 
-      const pastTarget      = angleRef.current >= casinoTargetRef.current
-      const nearlyStop      = velRef.current < 0.25
-      const essentiallyStop = velRef.current < 0.05
-      if ((pastTarget && nearlyStop) || essentiallyStop) {
-        velRef.current = 0
-        // Determine which face is currently forward
-        const isBackShowing = lastHalfRotRef.current % 2 === 1
-        const resultFaceValue = targetValueRef.current
-          ?? (isBackShowing ? backFaceRef.current : frontFaceRef.current)
-        // Set BOTH faces to the result value before snapping.
-        // The snap CSS animation can cross half-rotation boundaries, briefly showing
-        // whichever face is hidden — setting both to the same value makes it seamless.
-        frontFaceRef.current = resultFaceValue
-        backFaceRef.current  = resultFaceValue
-        setFaceEl(frontFaceElRef.current, resultFaceValue)
-        setFaceEl(backFaceElRef.current,  resultFaceValue)
-        // Snap to nearest 0° (front-face-forward)
-        snapAngleRef.current = Math.round(angleRef.current / 360) * 360
-        phaseRef.current = 'snapping'
-        setPhase('snapping')
-        setCoinTransform(snapAngleRef.current, 'transform 400ms ease-out')
-        snapTimerRef.current = setTimeout(() => {
-          angleRef.current  = snapAngleRef.current
-          phaseRef.current  = 'landed'
-          setPhase('landed')
-          resultRef.current = resultFaceValue
-          setResult(resultFaceValue)
-          onResult?.(resultFaceValue)
-          setCoinTransform(snapAngleRef.current)
-        }, 450)
-        return
+      // ── Check for landing ─────────────────────────────────────────────
+      if (elapsed >= plan.durationMs) {
+        angle = plan.endAngle
+        angleRef.current = angle
+        setCoinTransform(angle)
+
+        frontFaceRef.current = plan.targetValue
+        setFaceEl(frontFaceElRef.current, plan.targetValue)
+
+        setPhaseSync('landed')
+        resultRef.current = plan.targetValue
+        setResult(plan.targetValue)
+        onResultRef.current?.(plan.targetValue)
+        return // stop RAF loop
       }
+
+    } else {
+      return // idle or landed — nothing to animate
     }
 
-    angleRef.current += velRef.current * dt
+    angleRef.current = angle
+    setCoinTransform(angle)
 
-    // Randomise hidden face at each half-rotation — pure DOM, no React re-render
-    if (ph === 'spinning' || ph === 'settling') {
-      const halfRot = Math.floor((angleRef.current + 90) / 180)
-      if (halfRot !== lastHalfRotRef.current) {
-        lastHalfRotRef.current = halfRot
+    // ── Face randomisation at half-rotation boundaries ──────────────────
+    const halfRot = halfRotation(angle)
+    if (halfRot !== lastHalfRotRef.current) {
+      lastHalfRotRef.current = halfRot
 
-        if (ph === 'settling' && !targetLockRef.current) {
-          const remaining = casinoTargetRef.current - angleRef.current
-          if (remaining < 180) {
-            // We're inside the last half-rotation — this is the final visible face.
-            // Lock only the currently-visible face to the target. Leave the hidden
-            // face random so if any overshoot flips past, it won't show target twice.
-            targetLockRef.current = true
-            const isBackVisible = halfRot % 2 === 1
-            const result = targetValueRef.current ?? (isBackVisible ? backFaceRef.current : frontFaceRef.current)
-            if (isBackVisible) {
-              backFaceRef.current = result
-              setFaceEl(backFaceElRef.current, result)
-            } else {
-              frontFaceRef.current = result
-              setFaceEl(frontFaceElRef.current, result)
-            }
-          } else {
-            // Not yet in final half-rotation — randomize freely
-            if (halfRot % 2 === 1) {
-              const next = randomFace(backFaceRef.current)
-              frontFaceRef.current = next
-              setFaceEl(frontFaceElRef.current, next)
-            } else {
-              const next = randomFace(frontFaceRef.current)
-              backFaceRef.current = next
-              setFaceEl(backFaceElRef.current, next)
-            }
-          }
-        } else if (!targetLockRef.current) {
-          // Free randomization during spin
-          if (halfRot % 2 === 1) {
-            const next = randomFace(backFaceRef.current)
-            frontFaceRef.current = next
-            setFaceEl(frontFaceElRef.current, next)
-          } else {
-            const next = randomFace(frontFaceRef.current)
-            backFaceRef.current = next
-            setFaceEl(backFaceElRef.current, next)
-          }
+      // During settle: pin front face to target in the last full rotation
+      if (ph === 'settling' && !facePinnedRef.current) {
+        const remaining = planRef.current!.endAngle - angle
+        if (remaining <= 360) {
+          frontFaceRef.current = planRef.current!.targetValue
+          setFaceEl(frontFaceElRef.current, planRef.current!.targetValue)
+          facePinnedRef.current = true
+        }
+      }
+
+      if (!facePinnedRef.current) {
+        if (halfRot % 2 === 1) {
+          // Back now visible → randomise hidden front
+          const next = randomFace(backFaceRef.current)
+          frontFaceRef.current = next
+          setFaceEl(frontFaceElRef.current, next)
+        } else {
+          // Front now visible → randomise hidden back
+          const next = randomFace(frontFaceRef.current)
+          backFaceRef.current = next
+          setFaceEl(backFaceElRef.current, next)
         }
       }
     }
 
-    setCoinTransform(angleRef.current)
     rafRef.current = requestAnimationFrame(tick)
-  }, [onResult])
+  }, [])
 
   // ── React to external pressing signal ─────────────────────────────────────
   useEffect(() => {
     if (pressing) {
-      const ph = phaseRef.current
-      if (ph === 'snapping') return
+      // Don't interrupt an active settle
+      if (phaseRef.current === 'settling') return
+
       cancelAnimationFrame(rafRef.current)
-      if (snapTimerRef.current) { clearTimeout(snapTimerRef.current); snapTimerRef.current = null }
-      lastHalfRotRef.current  = Math.floor((angleRef.current + 90) / 180)
-      lastTickTimeRef.current = 0  // reset dt on new press
-      targetLockRef.current = false  // reset target lock
+      planRef.current      = null
+      facePinnedRef.current = false
+      baseAngleRef.current   = angleRef.current
+      spinStartRef.current   = performance.now()
+      lastHalfRotRef.current = halfRotation(angleRef.current)
+
       setResult(null)
       resultRef.current = null
+
       const newBack = randomFace(frontFaceRef.current)
       backFaceRef.current = newBack
       setFaceEl(frontFaceElRef.current, frontFaceRef.current)
-      setFaceEl(backFaceElRef.current,  newBack)
-      velRef.current = ph === 'landed' ? 3 : velRef.current || 3
+      setFaceEl(backFaceElRef.current, newBack)
+
       setPhaseSync('spinning')
       rafRef.current = requestAnimationFrame(tick)
-    } else {
-      if (phaseRef.current !== 'spinning') return
-      // Use provided holdDuration for multiplayer sync, or calculate locally
-      const holdMs   = holdDuration ?? (Date.now() - pressStart)
-      const t        = Math.min(holdMs / MAX_HOLD_MS, 1)
-      const decel    = DECEL_MIN + t * (DECEL_MAX - DECEL_MIN)
-      const baseCoast = COAST_MIN + t * (COAST_MAX - COAST_MIN)
-      // Use the caller-supplied extraRotation (forwarded from the roller) so
-      // all clients coast the same arc. Fall back to a local random only when
-      // no value is provided (single-player / legacy mode).
-      const coast = extraRotation ?? (baseCoast * (0.85 + Math.random() * 0.3))
 
-      if (settleAt && settleAt > Date.now()) {
-        // Deferred settling: store params and let the tick loop apply them at settleAt.
-        pendingDecelRef.current    = decel
-        pendingExtraRotRef.current = coast
-        settleAtRef.current        = settleAt
-        // Keep phase as 'spinning' — the die continues to spin freely until then.
-      } else {
-        // Immediate settling (no settleAt, or it's already in the past).
-        decelRef.current = decel
-        // Round casino target to the nearest full 360° so the die arrives face-forward.
-        casinoTargetRef.current = Math.round((angleRef.current + coast) / 360) * 360
-        targetLockRef.current = false
-        // Ensure enough velocity to reach the rounded target
-        const minVel = (casinoTargetRef.current - angleRef.current) / TARGET_MS * (1 - decelRef.current)
-        velRef.current = Math.min(Math.max(velRef.current, minVel), MAX_VEL)
-        setPhaseSync('settling')
-      }
+    } else if (phaseRef.current === 'spinning') {
+      // Release → build settle plan and begin deceleration.
+      // Uses holdDuration prop when provided (multiplayer sync),
+      // otherwise computes locally from pressStart.
+      const holdMs = holdDuration ?? (Date.now() - pressStart)
+      const plan   = createSettlePlan(angleRef.current, holdMs, targetValue)
+
+      planRef.current        = plan
+      settleStartRef.current = performance.now()
+      facePinnedRef.current  = false
+
+      setPhaseSync('settling')
+      // RAF loop continues — next tick reads the 'settling' phase
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pressing, settleAt, extraRotation, holdDuration])
+  }, [pressing])
 
-  useEffect(() => () => {
-    cancelAnimationFrame(rafRef.current)
-    if (snapTimerRef.current) clearTimeout(snapTimerRef.current)
-  }, [])
+  // Cleanup on unmount
+  useEffect(() => () => cancelAnimationFrame(rafRef.current), [])
 
   // Sync face DOM when going back to idle (after mount / diceCount reset)
   useEffect(() => {
@@ -308,23 +242,7 @@ export function CoinDice({ pressing, pressStart, onResult, targetValue, holdDura
     <div className={styles.root}>
       <div className={styles.scene}>
         <div className={styles.coinWrap}>
-          <div
-            ref={coinRef}
-            className={styles.coin}
-            onTransitionEnd={() => {
-              if (phaseRef.current !== 'snapping') return
-              if (snapTimerRef.current) { clearTimeout(snapTimerRef.current); snapTimerRef.current = null }
-              const snap = snapAngleRef.current
-              angleRef.current  = snap
-              phaseRef.current  = 'landed'
-              setPhase('landed')
-              const rv = frontFaceRef.current
-              resultRef.current = rv
-              setResult(rv)
-              onResult?.(rv)
-              setCoinTransform(snap)
-            }}
-          >
+          <div ref={coinRef} className={styles.coin}>
             {/* Faces: content is written via setFaceEl (direct DOM), not React state */}
             <div ref={frontFaceElRef} className={`${styles.face} ${styles.faceFront}`} />
             <div ref={backFaceElRef}  className={`${styles.face} ${styles.faceBack}`} />
